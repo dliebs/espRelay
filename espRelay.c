@@ -1,20 +1,19 @@
 //
 //
-//  ESP Relay Board - Version 1.0.1
-//  Based on espHTTPServer
-//  This version was not deployed [2024.01.16]
+//  ESP Relay Board - Version 1.1.0
+//    Based on espHTTPServer
+//    This version was deployed 2024.02.02
 //
 //  Generic ESP8266 (4MB/2MB) / ESP32 Dev Module Based
-//    Relay Board
-//    Feature 2
+//    Support for ESP8266 4 Channel and ESP32 8 Channel Relay Modules
 //
 //  Changes From Previous Version
-//    Comments, cleanup
+//    Transitioned to <espHTTPServer.h>
 //
 //
 
 #include <espWiFiUtils.h>
-#include "espHTTPServerUtils.h"
+#include <espHTTPServer.h>
 
 #ifndef STASSID
 #define STASSID             "Your-WiFi-SSID"        // WiFi SSID
@@ -22,9 +21,9 @@
 #endif
 #define WiFiHostname        "espRelay"            // WiFi Hostname
 
-#ifdef ESP8266
-  #define LED_A       1
-  #define LED_BUILTIN 2
+#ifdef ESP8266              // USE Generic ESP8266 Module with 4MB/2MB Flash Size
+  #define LED_A       5     // HIGH is off
+  #define LED_BUILTIN 2     // HIGH is off
   #define RELAY_1     15    // Default 16 on board but 16 is HIGH at boot
   #define RELAY_2     14
   #define RELAY_3     12
@@ -33,7 +32,7 @@
 #endif
 
 #ifdef ESP32                // USE ESP32 Dev Module AS BOARD OR ELSE YOU GET WEIRD BEHAVIOR ON GPIO25 (RELAY_3)
-  #define LED_BUILTIN 23
+  #define LED_A       23    // LOW is off
   #define RELAY_1     32
   #define RELAY_2     33
   #define RELAY_3     25
@@ -45,26 +44,42 @@
   int relays[8] = { RELAY_1, RELAY_2, RELAY_3, RELAY_4, RELAY_5, RELAY_6, RELAY_7, RELAY_8 };
 #endif
 
-// Define BASICPAGE or TABBEDPAGE
-#define BASICPAGE
-
 // Webpage Hex Colors
+#define PAGETITLE "ESP Relay"
 #define BGCOLOR "000"
 #define TABBGCOLOR "111"
 #define BUTTONCOLOR "222"
 #define TEXTCOLOR "a40"
 #define FONT "Helvetica"
 #define TABHEIGHTEM "47"
+#define REFRESHPAGE false
+#define PORT 80
 
+// espHTTPServer Object
+espHTTPServer httpServer( PAGETITLE, BGCOLOR, TABBGCOLOR, BUTTONCOLOR, TEXTCOLOR, FONT, TABHEIGHTEM, REFRESHPAGE, PORT );
 
 void setup() {
+  // Setup LED_A as output and turn off
+  pinMode(LED_A, OUTPUT);
+#ifdef ESP8266
+  digitalWrite(LED_A, HIGH);
+#endif
+#ifdef ESP32
+  digitalWrite(LED_A, LOW);
+#endif
+
   // Set relay pins to outputs and do a little dance
   for(int i = 0; i < sizeof(relays)/sizeof(int); i++) { pinMode(relays[i], OUTPUT); };
   for(int i = 0; i < sizeof(relays)/sizeof(int); i++) { digitalWrite(relays[i], HIGH); delay(125); };
   for(int i = 0; i < sizeof(relays)/sizeof(int); i++) { digitalWrite(relays[i], LOW); delay(125); };
 
   // Connect to WiFi, start OTA
+#ifdef ESP8266
   connectWiFi(STASSID, STAPSK, WiFiHostname, LED_BUILTIN);
+#endif
+#ifdef ESP32
+  connectWiFi(STASSID, STAPSK, WiFiHostname);
+#endif
   initializeOTA(WiFiHostname, STAPSK);
 
   // Start HTML Server
@@ -75,24 +90,42 @@ void setup() {
 void loop()
 {
   // Webserver
-  server.handleClient();
+  httpServer.server.handleClient();
 
   ArduinoOTA.handle();
 
   yield();
 }
 
+
+/*--------    Server Functions    --------*/
+
+void toggleRelay() {
+  int relayNum = httpServer.server.arg("relayNum").toInt();
+  digitalWrite(relays[relayNum], !digitalRead(relays[relayNum]));
+  httpServer.redirect();
+}
+
+void toggleLED() {
+  digitalWrite(LED_A, !digitalRead(LED_A));
+  httpServer.redirect();
+}
+
 /*--------         Webpage        --------*/
 
 void serverSetup() {
-  server.on("/", handleRoot);
-  server.on("/toggleRelay", HTTP_GET, toggleRelay);
-  server.onNotFound(handleNotFound);
-  server.begin();
+  httpServer.server.on("/", handleRoot);
+  httpServer.server.on("/toggleRelay", HTTP_GET, toggleRelay);
+  httpServer.server.on("/toggleLED", HTTP_GET, toggleLED);
+  httpServer.server.onNotFound(handleNotFound);
+  httpServer.server.begin();
 }
 
 String body = "<div class=\"container\">\n"
                 "<div class=\"centered-element\">\n"
+                  "<form action=\"/toggleLED\" method=\"GET\">"
+                    "<input class=\"simpleButton\" type=\"submit\" value=\"Turn LED %toggleStub%\" style=\"width: 100%;\">"
+                  "</form>\n"
                   "<form action=\"/toggleRelay\" method=\"GET\">"
                     "<input type=\"hidden\" name=\"remoteNumber\" value=\"4\"></input>"
                     "<button name=\"relayNum\" class=\"inputButton\" onclick=\"this.form.submit()\" value=\"0\" style=\"width: 50%;\">1</button>"
@@ -110,12 +143,22 @@ String body = "<div class=\"container\">\n"
               "</div>\n";
 
 void handleRoot() {
-  String deliveredHTML = assembleHTML(body);
-  server.send(200, "text/html", deliveredHTML);
+  String deliveredHTML = httpServer.assembleHTML(body);
+
+
+#ifdef ESP8266
+  if (digitalRead(LED_A)) { deliveredHTML.replace("%toggleStub%", "On"); }
+                     else { deliveredHTML.replace("%toggleStub%", "Off"); }
+#endif
+#ifdef ESP32
+  if (digitalRead(LED_A)) { deliveredHTML.replace("%toggleStub%", "Off"); }
+                     else { deliveredHTML.replace("%toggleStub%", "On"); }
+#endif
+
+  httpServer.server.send(200, "text/html", deliveredHTML);
 }
 
-void toggleRelay() {
-  int relayNum = server.arg("relayNum").toInt();
-  digitalWrite(relays[relayNum], !digitalRead(relays[relayNum]));
-  redirect();
+// Simple call back to espHTTPServer object for reasons
+void handleNotFound() {
+  httpServer.handleNotFound();
 }
